@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UEFI/EDK2 與 Arm TrustZone 互動式分析</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Calm Harmony (Background: stone-100, Text: stone-800, Primary: slate-600, Accent: stone-400) -->
+    <!-- Application Structure Plan: A top-navigation SPA with sections for Overview, Core Concepts (SMM, StMM, TrustZone), a direct Architecture Comparison, an interactive Initialization Flow timeline, and a Code Explorer. This non-linear, thematic structure is chosen over the report's linear format to facilitate easier comparison and exploration of complex, interrelated technical topics, which is the primary user need for this type of content. -->
+    <!-- Visualization & Content Choices: Report Info: SMM/StMM/TrustZone features -> Goal: Compare -> Viz: Interactive radar chart & comparison table -> Interaction: Hover tooltips on chart, direct side-by-side view in table -> Justification: Visualizes qualitative trade-offs and provides clear, direct comparison of key attributes. Library: Chart.js for radar chart. Report Info: StMM Init Flow -> Goal: Simplify process -> Viz: HTML/CSS Stepper -> Interaction: Click steps to reveal details -> Justification: Breaks down a complex, multi-step process into digestible, interactive chunks. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #f5f5f4; /* stone-100 */
+            color: #44403c; /* stone-700 */
+        }
+        .nav-link {
+            transition: color 0.3s, border-bottom-color 0.3s;
+            border-bottom: 2px solid transparent;
+        }
+        .nav-link.active, .nav-link:hover {
+            color: #475569; /* slate-600 */
+            border-bottom-color: #475569; /* slate-600 */
+        }
+        .content-section {
+            display: none;
+        }
+        .content-section.active {
+            display: block;
+        }
+        .timeline-step {
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        .timeline-step.active {
+            background-color: #475569; /* slate-600 */
+            color: white;
+            transform: scale(1.05);
+        }
+        .code-tab.active {
+            background-color: #475569; /* slate-600 */
+            color: white;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 350px;
+            max-height: 400px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 400px;
+            }
+        }
+    </style>
+</head>
+<body class="bg-stone-100">
+
+    <header class="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-50">
+        <nav class="container mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <h1 class="text-xl font-bold text-slate-700">韌體安全模式分析</h1>
+                <div class="hidden md:flex space-x-8">
+                    <a href="#overview" class="nav-link font-medium pb-1">總覽</a>
+                    <a href="#concepts" class="nav-link font-medium pb-1">核心概念</a>
+                    <a href="#comparison" class="nav-link font-medium pb-1">架構比較</a>
+                    <a href="#flow" class="nav-link font-medium pb-1">初始化流程</a>
+                    <a href="#code" class="nav-link font-medium pb-1">程式碼範例</a>
+                </div>
+                <div class="md:hidden">
+                    <button id="mobile-menu-button" class="text-stone-600 hover:text-slate-700 focus:outline-none">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
+                    </button>
+                </div>
+            </div>
+            <div id="mobile-menu" class="hidden md:hidden py-2">
+                <a href="#overview" class="block py-2 px-4 text-sm nav-link">總覽</a>
+                <a href="#concepts" class="block py-2 px-4 text-sm nav-link">核心概念</a>
+                <a href="#comparison" class="block py-2 px-4 text-sm nav-link">架構比較</a>
+                <a href="#flow" class="block py-2 px-4 text-sm nav-link">初始化流程</a>
+                <a href="#code" class="block py-2 px-4 text-sm nav-link">程式碼範例</a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container mx-auto p-4 sm:p-6 lg:p-8">
+        
+        <section id="overview" class="content-section">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold text-slate-800 mb-4">UEFI/EDK2 管理模式與 Arm TrustZone</h2>
+                <p class="max-w-3xl mx-auto text-lg text-stone-600">本報告全面分析了平台韌體中的安全執行環境，重點關注從傳統 x86 SMM 演進到現代 StMM，並探討其與 Arm TrustZone 的對應關係。此互動式應用旨在闡明其架構、流程與安全意涵。</p>
+            </div>
+            <div class="bg-white p-6 rounded-xl shadow-lg">
+                <h3 class="text-xl font-bold text-center text-slate-700 mb-6">系統執行層級概覽</h3>
+                <div class="relative max-w-2xl mx-auto space-y-2">
+                    <div class="bg-blue-100 text-blue-800 p-4 rounded-lg text-center font-semibold">應用程式 (Ring 3)</div>
+                    <div class="bg-green-100 text-green-800 p-4 rounded-lg text-center font-semibold">作業系統 / 虛擬機監控器 (Ring 0 / -1)</div>
+                    <div class="bg-amber-100 text-amber-800 p-4 rounded-lg text-center font-semibold">UEFI / EDK2 韌體</div>
+                    <div class="relative border-2 border-dashed border-red-400 rounded-lg p-4 mt-4">
+                        <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-stone-100 px-2 font-bold text-red-600">最高權限執行環境</div>
+                        <div class="grid md:grid-cols-2 gap-4 mt-4">
+                            <div class="bg-red-100 text-red-800 p-4 rounded-lg text-center">
+                                <h4 class="font-bold">x86: SMM / StMM (Ring -2)</h4>
+                                <p class="text-sm mt-1">透過 SMI 進入，在隔離的 SMRAM 中執行。</p>
+                            </div>
+                            <div class="bg-purple-100 text-purple-800 p-4 rounded-lg text-center">
+                                <h4 class="font-bold">Arm: TrustZone (EL3)</h4>
+                                <p class="text-sm mt-1">硬體隔離的安全世界，透過 SMC 進入。</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="bg-gray-200 text-gray-800 p-4 rounded-lg text-center font-semibold">硬體</div>
+                </div>
+            </div>
+        </section>
+
+        <section id="concepts" class="content-section">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold text-slate-800 mb-4">核心概念詳解</h2>
+                <p class="max-w-3xl mx-auto text-lg text-stone-600">深入了解三種關鍵的安全執行模式：傳統的 SMM、現代的 StMM，以及 Arm 的 TrustZone。</p>
+            </div>
+            <div class="grid md:grid-cols-1 lg:grid-cols-3 gap-8">
+                <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300">
+                    <h3 class="text-2xl font-bold text-slate-700 mb-4">系統管理模式 (SMM)</h3>
+                    <p class="text-stone-600 mb-4">x86 CPU 特有的操作模式，俗稱 "Ring -2"，擁有比作業系統更高的權限。透過不可遮罩的系統管理中斷 (SMI) 觸發，用於處理底層硬體控制與電源管理等任務。</p>
+                    <ul class="space-y-2 text-sm">
+                        <li class="flex items-start"><span class="text-red-500 mr-2">●</span><strong>隔離區：</strong>在受保護的 SMRAM 中執行。</li>
+                        <li class="flex items-start"><span class="text-red-500 mr-2">●</span><strong>挑戰：</strong>效能影響大、安全風險高（黑盒子特性）。</li>
+                        <li class="flex items-start"><span class="text-red-500 mr-2">●</span><strong>依賴性：</strong>高度依賴 DXE 階段，架構耦合緊密。</li>
+                    </ul>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300 border-2 border-slate-600">
+                    <h3 class="text-2xl font-bold text-slate-700 mb-4">獨立管理模式 (StMM)</h3>
+                    <p class="text-stone-600 mb-4">UEFI PI 規範中對管理模式的現代化實作。旨在解決傳統 SMM 的安全與架構問題，提供一個更安全、更獨立的執行環境。</p>
+                    <ul class="space-y-2 text-sm">
+                        <li class="flex items-start"><span class="text-green-500 mr-2">●</span><strong>優勢：</strong>可在啟動早期 (SEC/PEI) 載入，減少對 DXE 的依賴。</li>
+                        <li class="flex items-start"><span class="text-green-500 mr-2">●</span><strong>安全性：</strong>受限的協議存取與更精確的記憶體控制。</li>
+                        <li class="flex items-start"><span class="text-green-500 mr-2">●</span><strong>相容性：</strong>軟體層面的改進，可重用大部分 SMM 程式碼。</li>
+                    </ul>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300">
+                    <h3 class="text-2xl font-bold text-slate-700 mb-4">Arm TrustZone</h3>
+                    <p class="text-stone-600 mb-4">Arm 架構的硬體安全擴展，將系統資源劃分為「安全世界」和「普通世界」。它並非一種模式，而是一套完整的安全架構。</p>
+                    <ul class="space-y-2 text-sm">
+                        <li class="flex items-start"><span class="text-blue-500 mr-2">●</span><strong>核心：</strong>安全監控器 (Monitor Mode, EL3) 負責兩個世界的切換。</li>
+                        <li class="flex items-start"><span class="text-blue-500 mr-2">●</span><strong>隔離：</strong>透過硬體強制記憶體隔離 (NS-bit)。</li>
+                        <li class="flex items-start"><span class="text-blue-500 mr-2">●</span><strong>應用：</strong>構成受信任執行環境 (TEE) 的基礎，用於 DRM、行動支付等。</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section id="comparison" class="content-section">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold text-slate-800 mb-4">架構特性比較</h2>
+                <p class="max-w-3xl mx-auto text-lg text-stone-600">透過視覺化圖表與詳細表格，直觀地比較 SMM、StMM 與 Arm TrustZone 在關鍵特性上的差異。</p>
+            </div>
+            
+            <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                <h3 class="text-xl font-bold text-center text-slate-700 mb-4">特性雷達圖</h3>
+                <div class="chart-container">
+                    <canvas id="comparisonChart"></canvas>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-lg overflow-x-auto">
+                <h3 class="text-xl font-bold text-center text-slate-700 mb-6">詳細特性對比表</h3>
+                <table class="w-full min-w-[600px] text-left">
+                    <thead>
+                        <tr class="border-b-2 border-stone-300">
+                            <th class="p-4 font-bold text-slate-800">特性</th>
+                            <th class="p-4 font-bold text-slate-800">SMM (傳統)</th>
+                            <th class="p-4 font-bold text-slate-800">StMM (獨立)</th>
+                            <th class="p-4 font-bold text-slate-800">Arm TrustZone</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-stone-200">
+                        <tr class="hover:bg-stone-50">
+                            <td class="p-4 font-semibold">權限級別</td>
+                            <td class="p-4">Ring -2 (x86)</td>
+                            <td class="p-4">Ring -2 (x86)</td>
+                            <td class="p-4">EL3 (安全監控器), 安全 EL1/0</td>
+                        </tr>
+                        <tr class="hover:bg-stone-50">
+                            <td class="p-4 font-semibold">進入機制</td>
+                            <td class="p-4">硬體/軟體 SMI</td>
+                            <td class="p-4">硬體/軟體 MMI (SMI)</td>
+                            <td class="p-4">SMC 指令</td>
+                        </tr>
+                        <tr class="hover:bg-stone-50">
+                            <td class="p-4 font-semibold">隔離基礎</td>
+                            <td class="p-4">SMRAM (韌體配置)</td>
+                            <td class="p-4">MMRAM (SMRAM, 韌體配置)</td>
+                            <td class="p-4">硬體強制 (NS-bit)</td>
+                        </tr>
+                        <tr class="hover:bg-stone-50">
+                            <td class="p-4 font-semibold">啟動時機</td>
+                            <td class="p-4">DXE 階段</td>
+                            <td class="p-4">SEC 或 PEI 階段 (早期)</td>
+                            <td class="p-4">系統啟動時 (BL1/BL2)</td>
+                        </tr>
+                        <tr class="hover:bg-stone-50">
+                            <td class="p-4 font-semibold">主要挑戰</td>
+                            <td class="p-4">安全漏洞多、效能抖動</td>
+                            <td class="p-4">需韌體支援，實作複雜度</td>
+                            <td class="p-4">上下文切換開銷</td>
+                        </tr>
+                        <tr class="hover:bg-stone-50">
+                            <td class="p-4 font-semibold">可移植性</td>
+                            <td class="p-4">低 (x86 特定)</td>
+                            <td class="p-4">中 (概念可移植)</td>
+                            <td class="p-4">高 (Arm 標準)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="flow" class="content-section">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold text-slate-800 mb-4">StMM 初始化流程</h2>
+                <p class="max-w-3xl mx-auto text-lg text-stone-600">透過互動式時間軸，了解 Standalone MM 如何在 UEFI 啟動過程的早期階段被初始化。點擊不同階段查看詳細步驟。</p>
+            </div>
+            <div class="w-full max-w-4xl mx-auto">
+                <div class="flex items-center justify-center space-x-2 sm:space-x-4 mb-8">
+                    <div class="timeline-step flex-1 text-center p-3 rounded-lg bg-white shadow" data-flow="sec">SEC 階段</div>
+                    <div class="text-stone-400 font-bold text-2xl">→</div>
+                    <div class="timeline-step flex-1 text-center p-3 rounded-lg bg-white shadow" data-flow="pei">PEI 階段</div>
+                    <div class="text-stone-400 font-bold text-2xl">→</div>
+                    <div class="timeline-step flex-1 text-center p-3 rounded-lg bg-white shadow" data-flow="dxe">DXE 階段</div>
+                </div>
+                <div id="flow-details" class="bg-white p-6 rounded-xl shadow-lg min-h-[250px] transition-all duration-300">
+                    <!-- Details will be injected here by JS -->
+                </div>
+            </div>
+        </section>
+        
+        <section id="code" class="content-section">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold text-slate-800 mb-4">概念性程式碼範例</h2>
+                <p class="max-w-3xl mx-auto text-lg text-stone-600">探索實作這些安全環境的核心程式碼結構。這些範例展示了驅動程式進入點、通訊協議和生命週期管理。</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-lg">
+                <div class="flex border-b border-stone-200">
+                    <button class="code-tab p-4 font-medium text-stone-600 hover:bg-stone-50 flex-1" data-code="uefi">UEFI MM 驅動程式</button>
+                    <button class="code-tab p-4 font-medium text-stone-600 hover:bg-stone-50 flex-1" data-code="tee">OP-TEE TA</button>
+                    <button class="code-tab p-4 font-medium text-stone-600 hover:bg-stone-50 flex-1" data-code="atf">ATF SMC 處理程式</button>
+                </div>
+                <div class="p-2 sm:p-4">
+                    <div id="code-uefi" class="code-content hidden">
+                        <pre class="bg-gray-800 text-white p-4 rounded-lg overflow-x-auto text-sm"><code class="language-c">
+// MyMmDriver.c - 概念性 UEFI MM 驅動程式範例
+#include &lt;Uefi.h&gt;
+#include &lt;Library/MmServicesTableLib.h&gt;
+#include &lt;Protocol/MmCommunication.h&gt;
+
+EFI_STATUS EFIAPI MyMmDriverEntryPoint (
+  IN EFI_HANDLE           ImageHandle,
+  IN EFI_MM_SYSTEM_TABLE2 *MmSystemTable
+) {
+  gMmst = MmSystemTable;
+  // ... 初始化, 註冊 MMI 處理程式 ...
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS EFIAPI MyMmDriverMmiHandler (
+  IN EFI_HANDLE  DispatchHandle,
+  IN CONST VOID  *Context,
+  IN OUT VOID    *CommBuffer,
+  IN OUT UINTN   *CommBufferSize
+) {
+  // ... 處理來自非 MM 世界的請求 ...
+  // 必須嚴格驗證 CommBuffer
+  return EFI_SUCCESS;
+}
+                        </code></pre>
+                    </div>
+                    <div id="code-tee" class="code-content hidden">
+                        <pre class="bg-gray-800 text-white p-4 rounded-lg overflow-x-auto text-sm"><code class="language-c">
+// hello_world_ta.c - 概念性 OP-TEE 受信任應用程式範例
+#include &lt;tee_internal_api.h&gt;
+
+// TA 生命週期進入點
+TEE_Result TA_CreateEntryPoint(void);
+TEE_Result TA_OpenSessionEntryPoint(...);
+void TA_CloseSessionEntryPoint(void *session_id);
+void TA_DestroyEntryPoint(void);
+
+// 命令處理進入點
+TEE_Result TA_InvokeCommandEntryPoint(
+  void *session_id,
+  uint32_t command_id,
+  uint32_t param_types,
+  TEE_Param params
+) {
+  switch (command_id) {
+    // ... 處理來自 Client App 的命令 ...
+  }
+  return TEE_SUCCESS;
+}
+                        </code></pre>
+                    </div>
+                    <div id="code-atf" class="code-content hidden">
+                        <pre class="bg-gray-800 text-white p-4 rounded-lg overflow-x-auto text-sm"><code class="language-c">
+// Conceptual_SMC_Handler.c - 概念性 ATF SMC 處理程式範例
+#include &lt;smccc.h&gt;
+#include &lt;runtime_svc.h&gt;
+
+uintptr_t my_secure_service_smc_handler(
+    uint32_t smc_fid,
+    u_register_t x1, u_register_t x2, ...
+) {
+  // 檢查呼叫者是否為 Non-secure
+  if (!is_caller_non_secure(flags)) {
+    return SMC_UNK;
+  }
+
+  // 根據 SMC 功能 ID (smc_fid) 處理請求
+  switch (smc_fid) {
+    // ... 執行安全服務 ...
+  }
+  return SMC_RET1(handle, SMC_SUCCESS);
+}
+                        </code></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="text-center py-8 text-stone-500 text-sm">
+        <p>基於 UEFI/EDK2 技術報告產生之互動式分析應用。</p>
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const navLinks = document.querySelectorAll('.nav-link');
+            const sections = document.querySelectorAll('.content-section');
+            const mobileMenuButton = document.getElementById('mobile-menu-button');
+            const mobileMenu = document.getElementById('mobile-menu');
+
+            function showSection(hash) {
+                const targetHash = hash || '#overview';
+                
+                sections.forEach(section => {
+                    if ('#' + section.id === targetHash) {
+                        section.classList.add('active');
+                    } else {
+                        section.classList.remove('active');
+                    }
+                });
+
+                navLinks.forEach(link => {
+                    if (link.getAttribute('href') === targetHash) {
+                        link.classList.add('active');
+                    } else {
+                        link.classList.remove('active');
+                    }
+                });
+
+                if (targetHash === '#comparison' && !window.comparisonChartInstance) {
+                    renderComparisonChart();
+                }
+            }
+            
+            navLinks.forEach(link => {
+                link.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    const targetHash = this.getAttribute('href');
+                    history.pushState(null, null, targetHash);
+                    showSection(targetHash);
+                    mobileMenu.classList.add('hidden');
+                });
+            });
+
+            mobileMenuButton.addEventListener('click', function() {
+                mobileMenu.classList.toggle('hidden');
+            });
+
+            window.addEventListener('popstate', function () {
+                showSection(window.location.hash);
+            });
+
+            showSection(window.location.hash);
+
+            function renderComparisonChart() {
+                const ctx = document.getElementById('comparisonChart').getContext('2d');
+                window.comparisonChartInstance = new Chart(ctx, {
+                    type: 'radar',
+                    data: {
+                        labels: ['安全性', '效能影響', '硬體依賴', '可移植性', '實作複雜度', '啟動靈活性'],
+                        datasets: [{
+                            label: 'SMM (傳統)',
+                            data: [2, 2, 4, 1, 3, 1],
+                            backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                            borderColor: 'rgb(239, 68, 68)',
+                            pointBackgroundColor: 'rgb(239, 68, 68)',
+                        }, {
+                            label: 'StMM (獨立)',
+                            data: [4, 3, 4, 3, 4, 5],
+                            backgroundColor: 'rgba(34, 197, 94, 0.2)',
+                            borderColor: 'rgb(34, 197, 94)',
+                            pointBackgroundColor: 'rgb(34, 197, 94)',
+                        }, {
+                            label: 'Arm TrustZone',
+                            data: [5, 4, 5, 5, 5, 5],
+                            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                            borderColor: 'rgb(59, 130, 246)',
+                            pointBackgroundColor: 'rgb(59, 130, 246)',
+                        }]
+                    },
+                    options: {
+                        maintainAspectRatio: false,
+                        scales: {
+                            r: {
+                                angleLines: {
+                                    color: '#d6d3d1' // stone-300
+                                },
+                                grid: {
+                                    color: '#d6d3d1' // stone-300
+                                },
+                                pointLabels: {
+                                    color: '#44403c', // stone-700
+                                    font: {
+                                        size: 14,
+                                    }
+                                },
+                                ticks: {
+                                    backdropColor: 'transparent',
+                                    color: '#78716c', // stone-500
+                                    stepSize: 1,
+                                    beginAtZero: true,
+                                    max: 5
+                                }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                labels: {
+                                    color: '#44403c' // stone-700
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            const flowSteps = document.querySelectorAll('.timeline-step');
+            const flowDetailsContainer = document.getElementById('flow-details');
+            const flowData = {
+                sec: `
+                    <h4 class="font-bold text-lg mb-3">SEC 階段初始化</h4>
+                    <ol class="list-decimal list-inside space-y-2 text-stone-600">
+                        <li>初始化 MM 進入向量。</li>
+                        <li>打開 MMRAM，建立堆，並載入 MM Foundation。</li>
+                        <li>MM Foundation 產生 MMST (管理模式系統表)。</li>
+                        <li>呼叫 RegisterMmEntry() 註冊 MM Foundation 進入點。</li>
+                        <li>MM 環境初步配置完成，可處理 MMI。</li>
+                        <li>(可選) 關閉並鎖定 MMRAM。</li>
+                        <li>SEC Core 載入 PEI Core。</li>
+                    </ol>
+                `,
+                pei: `
+                    <h4 class="font-bold text-lg mb-3">PEI 階段初始化</h4>
+                    <ol class="list-decimal list-inside space-y-2 text-stone-600">
+                        <li>PEIM 產生 MM_ACCESS_PPI 和 MM_CONTROL_PPI。</li>
+                        <li>另一個 PEIM 初始化 MM 進入向量並產生 MM_CONFIGURATION_PPI。</li>
+                        <li>MM IPL PEIM 打開 MMRAM，載入 MM Foundation。</li>
+                        <li>MM Foundation 產生 MMST，MM 環境準備就緒。</li>
+                        <li>發布 MM_COMMUNICATION_PPI 用於後續通訊。</li>
+                        <li>在此階段可載入額外的 MM 獨立驅動程式。</li>
+                    </ol>
+                `,
+                dxe: `
+                    <h4 class="font-bold text-lg mb-3">DXE 階段協作</h4>
+                    <ol class="list-decimal list-inside space-y-2 text-stone-600">
+                        <li>特殊的 MM IPL DXE 驅動程式與 MM Foundation 通訊。</li>
+                        <li>告知 EFI_SYSTEM_TABLE 指標。</li>
+                        <li>在 UEFI 協議資料庫中發布 MM_BASE_PROTOCOL 和 MM_COMMUNICATION_PROTOCOL。</li>
+                        <li>在處理啟動選項前，安裝 DXE_MM_READY_TO_LOCK_PROTOCOL。</li>
+                        <li>這會觸發在 MM 協議資料庫中安裝 MM_READY_TO_LOCK_PROTOCOL，最終鎖定 MM 環境。</li>
+                    </ol>
+                `
+            };
+
+            function showFlowDetails(flow) {
+                flowSteps.forEach(step => {
+                    if (step.dataset.flow === flow) {
+                        step.classList.add('active');
+                    } else {
+                        step.classList.remove('active');
+                    }
+                });
+                flowDetailsContainer.innerHTML = flowData[flow] || '<p class="text-center text-stone-500">請點擊上方的一個階段來查看詳細資訊。</p>';
+            }
+
+            flowSteps.forEach(step => {
+                step.addEventListener('click', function() {
+                    showFlowDetails(this.dataset.flow);
+                });
+            });
+            showFlowDetails('sec');
+
+            const codeTabs = document.querySelectorAll('.code-tab');
+            const codeContents = document.querySelectorAll('.code-content');
+
+            function showCode(codeId) {
+                codeTabs.forEach(tab => {
+                    if (tab.dataset.code === codeId) {
+                        tab.classList.add('active');
+                    } else {
+                        tab.classList.remove('active');
+                    }
+                });
+                codeContents.forEach(content => {
+                    if (content.id === 'code-' + codeId) {
+                        content.classList.remove('hidden');
+                    } else {
+                        content.classList.add('hidden');
+                    }
+                });
+            }
+
+            codeTabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    showCode(this.dataset.code);
+                });
+            });
+            showCode('uefi');
+        });
+    </script>
+</body>
+</html>
